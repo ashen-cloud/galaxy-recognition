@@ -45,6 +45,8 @@ labels = labels_f[:split_idx, :]
 labels_test = labels_f[split_idx:, :]
 
 
+# self.avgpool = nn.MaxPool2d(kernel_size=3, padding=0) # nn.AdaptiveAvgPool2d(output_size=1)
+
 class GalaxyNet(nn.Module):
 
     def __init__(self):
@@ -53,10 +55,11 @@ class GalaxyNet(nn.Module):
         self.conv1 = nn.Conv2d(3, 24, 5)
         self.maxpool = nn.MaxPool2d(kernel_size=3, padding=0)
 
-        # self.conv2 = nn.Conv2d(18, 24, 5)
+        self.conv2 = nn.Conv2d(18, 24, 5)
+
         self.conv3 = nn.Conv2d(24, 48, 5)
+
         self.conv4 = nn.Conv2d(48, 92, 5)
-        # self.avgpool = nn.MaxPool2d(kernel_size=3, padding=0) # nn.AdaptiveAvgPool2d(output_size=1)
 
         self.fc1 = nn.Linear(92 * 26 * 26, 10)
         self.softmax1 = nn.LogSoftmax(dim=1)
@@ -74,20 +77,21 @@ class GalaxyNet(nn.Module):
 
         x = self.conv4(x)
 
-        pooled = self.maxpool(F.leaky_relu(x))
+        final = self.maxpool(F.leaky_relu(x))
+        print('final shape', final.shape)
 
-        # pooled = pooled.view(x.shape[0], 92 * 26 * 26)
+        # final = final.view(x.shape[0], 92 * 26 * 26)
 
         # if not hasattr(self, 'fc1'):
         #     self.fc1 = nn.Linear(128 * 26 * 26, 10)
 
-        x = self.fc1(pooled.view(pooled.size(0), -1))
+        x = self.fc1(final.view(final.size(0), -1))
         x = self.softmax1(x)
         return x
 
 
 model = GalaxyNet()
-# model.to('cuda:0')
+model.to('cuda:0')
 
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
@@ -101,13 +105,13 @@ for i in tqdm(range(EPOCHS)):
 
     samp = np.random.randint(0, images.shape[0], (BATCH))
 
-    X = torch.tensor(images[samp]).float()
-    # X = torch.tensor(images[samp]).to('cuda:0').float()
+    # X = torch.tensor(images[samp]).float()
+    X = torch.tensor(images[samp]).to('cuda:0').float()
 
     out = model(X)
 
-    Y = torch.argmax(torch.tensor(labels[samp]).long(), dim=1)
-    # Y = torch.argmax(torch.tensor(labels[samp]).long().to('cuda:0'), dim=1)
+    # Y = torch.argmax(torch.tensor(labels[samp]).long(), dim=1)
+    Y = torch.argmax(torch.tensor(labels[samp]).long().to('cuda:0'), dim=1)
     
     loss = loss_fn(out, Y)
 
@@ -123,16 +127,16 @@ with torch.no_grad():
         X_test = images_test[i]
         Y_test = labels_test[i]
 
-        X = torch.tensor(X_test).float()
-        # X = torch.tensor(X_test).to('cuda:0').float()
+        # X = torch.tensor(X_test).float()
+        X = torch.tensor(X_test).to('cuda:0').float()
 
         X = X.view(1, 3, 256, 256)
 
         out = model(X)
 
         prediction = torch.argmax(out)
-        real = torch.argmax(torch.tensor(Y_test))
-        # real = torch.argmax(torch.tensor(Y_test).to('cuda:0'))
+        # real = torch.argmax(torch.tensor(Y_test))
+        real = torch.argmax(torch.tensor(Y_test).to('cuda:0'))
 
         if prediction == real:
             correct += 1
