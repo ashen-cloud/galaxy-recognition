@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import pandas as pd
 import numpy as np
+import cv2
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -30,29 +31,156 @@ with h5py.File('Galaxy10_DECals.h5', 'r') as File:
     images = np.array(File['images'])
     labels = np.array(File['ans'])
 
-labels = labels.astype(np.float64)
-images = images.astype(np.float64)
+labels = labels.astype(np.float32)
+images = images.astype(np.float32)
 
-images_f = np.einsum('klij->kjil', images)
+# labels = labels[10000:]
+# images = images[10000:]
+
+# images_f = np.einsum('klij->kjil', images)
 labels_f = to_categorical(labels, 10)
+
+# resize = lambda x: cv2.resize(x, dsize=(60, 60), interpolation=cv2.INTER_CUBIC)
+# images_f = np.array(map(resize, images_f))
+
+images_res = np.empty((images.shape[0], 60, 60, 3), dtype=images.dtype)
+
+for i in range(images.shape[0]):
+    images_res[i] = cv2.resize(images[i], dsize=(60, 60), interpolation=cv2.INTER_CUBIC)
 
 split_idx = int(images.shape[0] * 0.8)
 
-images = images_f[:split_idx, :]
-images_test = images_f[split_idx:, :]
+images = images_res[:split_idx, :]
+images_test = images_res[split_idx:, :]
 
 labels = labels_f[:split_idx, :]
 labels_test = labels_f[split_idx:, :]
 
-
-# self.avgpool = nn.MaxPool2d(kernel_size=3, padding=0) # nn.AdaptiveAvgPool2d(output_size=1)
-
+# print('image shape', images[0].shape)
+# quit()
 class GalaxyNet(nn.Module):
 
     def __init__(self):
         super(GalaxyNet, self).__init__()
 
-        self.conv1 = nn.Conv2d(3, 24, 5)
+        self.convs = nn.Sequential(
+            nn.Conv2d(3, 64, 9, stride=1, padding=int(5/2), padding_mode='zeros'),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(64, 96, 5, stride=1, padding=int(5/2), padding_mode='zeros'),
+            nn.BatchNorm2d(96),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+        )
+
+        self.lins = nn.Sequential(
+            nn.Linear(18816, 9408),
+            nn.Sigmoid(),
+            nn.Linear(9408, 4704),
+            nn.Sigmoid(),
+        )
+        
+        self.classifier = nn.Linear(4704, 10)
+        
+        self.dropout = nn.Dropout(0.15)
+
+
+    def forward(self, x):
+        x = self.convs(x)
+        
+        x = self.dropout(x)
+
+        # print('shape', x.shape)
+        x = x.reshape(x.size(0), -1)
+        x = self.lins(x)
+        # print('aft')
+
+        x = self.classifier(x)
+
+        return x
+
+
+model = GalaxyNet()
+model.to('cuda:0')
+
+optimizer = optim.Adam(model.parameters(), lr=3e-4) # 3e-4 0.0003
+
+EPOCHS = 30
+BATCH = 24
+
+loss_fn = nn.CrossEntropyLoss()
+
+losses = []
+accuracies = []
+
+for i in tqdm(range(EPOCHS)):
+    optimizer.zero_grad()
+
+    samp = np.random.randint(0, images.shape[0], (BATCH))
+
+    X = torch.tensor(images[samp]).to('cuda:0').float() / 255
+
+    out = model(X.reshape(BATCH, 3, 60, 60))
+    # print('actual', out)
+    # print('probabilities', F.softmax(out, dim=1))
+
+    Y = torch.tensor(labels[samp]).float().to('cuda:0')
+    
+    label = torch.argmax(Y, dim=1)
+
+    cat = torch.argmax(out, dim=1)
+
+    loss = loss_fn(out, label)
+
+    accuracy = (cat == label).float().mean()
+
+    losses.append(loss)
+    accuracies.append(accuracy)
+
+    loss.backward()
+
+    optimizer.step()
+
+for i in range(len(losses)):
+    print('loss', losses[i])
+    print('acc', accuracies[i])
+
+total = 0
+correct = 0
+with torch.no_grad():
+    test_data = range(images_test.shape[0])
+    for i in tqdm(test_data):
+        X_test = images_test[i]
+        Y_test = labels_test[i]
+
+        # X = torch.tensor(X_test).float()
+        X = torch.tensor(X_test).to('cuda:0').float() / 255
+
+        X = X.reshape(1, 3, 60, 60)
+
+        out = model(X)
+
+        prediction = torch.argmax(out)
+
+        real = torch.argmax(torch.tensor(Y_test).to('cuda:0'))
+
+        if prediction == real:
+            correct += 1
+
+        total += 1
+
+print('total', total)
+print('correct', correct)
+print('accuracy', round(correct / total, 3))
+
+
+
+
+# ------------------ JUNK ------------------ #
+'''
+self.conv1 = nn.Conv2d(3, 24, 5)
         self.maxpool = nn.MaxPool2d(kernel_size=3, padding=0)
 
         self.conv2 = nn.Conv2d(18, 24, 5)
@@ -65,8 +193,7 @@ class GalaxyNet(nn.Module):
         self.softmax1 = nn.LogSoftmax(dim=1)
 
 
-    def forward(self, x):
-        x = self.conv1(x)
+x = self.conv1(x)
         x = self.maxpool(F.leaky_relu(x))
 
         # x = self.conv2(x)
@@ -87,64 +214,7 @@ class GalaxyNet(nn.Module):
 
         x = self.fc1(final.view(final.size(0), -1))
         x = self.softmax1(x)
-        return x
 
-
-model = GalaxyNet()
-model.to('cuda:0')
-
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-EPOCHS = 1
-BATCH = 4
-
-loss_fn = nn.CrossEntropyLoss()
-
-for i in tqdm(range(EPOCHS)):
-    optimizer.zero_grad()
-
-    samp = np.random.randint(0, images.shape[0], (BATCH))
-
-    # X = torch.tensor(images[samp]).float()
-    X = torch.tensor(images[samp]).to('cuda:0').float()
-
-    out = model(X)
-
-    # Y = torch.argmax(torch.tensor(labels[samp]).long(), dim=1)
-    Y = torch.argmax(torch.tensor(labels[samp]).long().to('cuda:0'), dim=1)
-    
-    loss = loss_fn(out, Y)
-
-    loss.backward()
-
-    optimizer.step()
-
-
-total = 0
-correct = 0
-with torch.no_grad():
-    for i in tqdm(range(images_test.shape[0])):
-        X_test = images_test[i]
-        Y_test = labels_test[i]
-
-        # X = torch.tensor(X_test).float()
-        X = torch.tensor(X_test).to('cuda:0').float()
-
-        X = X.view(1, 3, 256, 256)
-
-        out = model(X)
-
-        prediction = torch.argmax(out)
-        # real = torch.argmax(torch.tensor(Y_test))
-        real = torch.argmax(torch.tensor(Y_test).to('cuda:0'))
-
-        if prediction == real:
-            correct += 1
-
-        total += 1
-
-print('total', total)
-print('correct', correct)
-print('accuracy', round(correct / total, 3))
+'''
 
 
